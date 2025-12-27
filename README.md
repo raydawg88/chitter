@@ -9,13 +9,13 @@ Real-time coordination for Claude Code agents.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rayhernandez/chitter/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/raydawg88/chitter/main/install.sh | bash
 ```
 
 Or clone and run:
 
 ```bash
-git clone https://github.com/rayhernandez/chitter.git
+git clone https://github.com/raydawg88/chitter.git
 cd chitter
 ./install.sh
 ```

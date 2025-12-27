@@ -106,7 +106,7 @@ install_server() {
         print_success "Server installed from local source"
     else
         # Download from GitHub
-        REPO_URL="https://raw.githubusercontent.com/rayhernandez/chitter/main/server.py"
+        REPO_URL="https://raw.githubusercontent.com/raydawg88/chitter/main/server.py"
         if curl -fsSL "$REPO_URL" -o "$CHITTER_DIR/server.py" 2>/dev/null; then
             print_success "Server downloaded from GitHub"
         else
