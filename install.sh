@@ -14,7 +14,7 @@ set -e
 VERSION="1.0.0"
 CHITTER_DIR="$HOME/.chitter"
 CLAUDE_DIR="$HOME/.claude"
-MCP_CONFIG="$CLAUDE_DIR/mcp.json"
+MCP_CONFIG="$CLAUDE_DIR/claude.json"
 CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
 
 # Colors
