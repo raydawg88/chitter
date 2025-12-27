@@ -13,25 +13,22 @@ Each agent does great work. But when they're done, nothing fits together.
 
 **Why?** Parallel agents can't see each other. They're spawned into isolated processes. Agent A has no idea Agent B exists, let alone what decisions it's making.
 
-You end up playing merge conflict referee for code that was supposed to work together from the start.
-
 ## The Solution
 
-Chitter gives your agents a shared decision log.
+Chitter automatically tracks parallel agents and surfaces coordination context.
+
+**No action required from you or Claude.** Hooks intercept Task calls and:
+1. Detect when multiple agents are running in parallel
+2. Auto-create a coordination workflow
+3. Show context to Claude before each agent spawns
+4. Log completions and extract decisions
+5. Surface potential conflicts when work finishes
 
 ```
-Before: Agents work in isolation → conflicting decisions → you clean up the mess
+Before: Agents work in isolation → conflicting decisions → you clean up
 
-After:  Agents log decisions → Main Claude reviews → conflicts caught before code is written
+After:  Hooks track everything → context injected → conflicts visible
 ```
-
-It's not real-time chat between agents. It's simpler: **agents log, Main Claude coordinates.**
-
-When you spawn parallel agents with Chitter:
-1. Each agent declares what they're working on and logs key decisions
-2. After all agents complete, you review the decision log
-3. Conflicts surface immediately (same file modified, incompatible API designs, etc.)
-4. You resolve conflicts before presenting results to the user
 
 ## Install
 
@@ -43,74 +40,94 @@ Restart Claude Code after installation.
 
 ## How It Works
 
-**Before spawning agents:**
+When Claude spawns a second parallel agent, you'll see in the log:
+
 ```
-chitter_workflow_start(
-  description="Build user authentication",
-  agents_planned=["Frontend login UI", "Backend auth API", "Database schema"]
-)
+[12:34:56] PARALLEL DETECTED: backend-a1b2 joining 1 active agents
+[12:34:56] AGENT REGISTERED: backend-a1b2 (backend-developer) - Build auth API
 ```
 
-This returns context to inject into each agent's task. Agents then know they're part of a coordinated workflow and will log their decisions.
+And Claude sees this context before the Task executes:
 
-**After agents complete:**
 ```
-chitter_workflow_review(workflow_id)
-```
+⚡ CHITTER: Parallel work detected
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Workflow: a1b2c3d4
+Active agents:
+  • frontend-x1y2 (frontend-developer): Building login UI
+  • backend-a1b2 (backend-developer): [THIS AGENT]
 
-Returns:
-```
-## Decisions Made
-- [Frontend] Expects POST /api/auth/login with {email, password}
-- [Backend] Created POST /api/v1/authenticate with {username, password}
-- [Database] Primary key is users.id, email is unique constraint
-
-## CONFLICTS DETECTED
-🔴 API mismatch: Frontend expects /api/auth/login, Backend created /api/v1/authenticate
-🟡 Field mismatch: Frontend sends "email", Backend expects "username"
+💡 Consider including in this agent's prompt:
+   "Other agents are working on this project. Coordinate on shared interfaces."
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Now you fix the conflicts *before* the code is presented as "done."
+When all agents complete, decisions are extracted and surfaced:
+
+```
+📋 CHITTER: Parallel work complete
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Decisions detected:
+[frontend-x1y2] Created login form using React Hook Form
+[backend-a1b2] Implemented JWT auth with /api/v1/auth endpoints
+
+💡 Review for conflicts with: chitter_workflow_review("a1b2c3d4")
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+## Modes
+
+Configure in `~/.chitter/config.json`:
+
+```json
+{
+  "mode": "nudge"
+}
+```
+
+| Mode | Behavior |
+|------|----------|
+| `track` | Silent logging only. No output to Claude. |
+| `nudge` | Track + show context to Claude. **(default)** |
+| `block` | Hard block Task calls without active workflow. |
+
+## Watch the Log
+
+```bash
+tail -f ~/.chitter/chitter.log
+```
 
 ## Works with Goldfish
 
-[Goldfish](https://github.com/raydawg88/goldfish) gives Claude Code persistent memory across sessions—so it remembers what you built last week, what decisions you made, and where you left off.
+[Goldfish](https://github.com/raydawg88/goldfish) gives Claude Code persistent memory across sessions—so it remembers what you built last week.
 
-Chitter handles the other half: **coordination within a session** when multiple agents work in parallel.
+Chitter handles coordination within a session when multiple agents work in parallel.
 
 | | Goldfish | Chitter |
 |---|----------|---------|
-| **Problem** | "Claude forgot everything from yesterday" | "My parallel agents built incompatible code" |
-| **Solution** | Persistent project memory | Shared decision log for parallel work |
-| **Lifespan** | Forever | Cleared when workflow closes |
+| **Problem** | "Claude forgot everything" | "Parallel agents built incompatible code" |
+| **Solution** | Persistent project memory | Automatic parallel tracking |
+| **Lifespan** | Forever | Per workflow |
 
 Use both. Goldfish remembers. Chitter coordinates.
 
-## The Key Insight
+## MCP Tools (Optional)
 
-The real problem isn't "agents can't talk to each other."
+Chitter also provides MCP tools for explicit control:
 
-It's that **agents have no shared context.** They don't know what the overall goal is, who else is working, or what decisions matter.
+| Tool | Purpose |
+|------|---------|
+| `chitter_status` | Check active workflows |
+| `chitter_workflow_start` | Manually create coordination context |
+| `chitter_workflow_review` | Review decisions, detect conflicts |
+| `chitter_workflow_close` | Clean up workflow |
 
-Chitter doesn't try to make agents chat. It gives Main Claude (the coordinator) visibility into what each agent decided, so conflicts get caught at review time—not after you've already merged incompatible code.
-
-## Tools
-
-| Tool | Who Calls It | What It Does |
-|------|--------------|--------------|
-| `chitter_status` | Main Claude | Check for active workflows |
-| `chitter_workflow_start` | Main Claude | Create coordination context |
-| `chitter_workflow_review` | Main Claude | Review decisions, detect conflicts |
-| `chitter_workflow_close` | Main Claude | Clean up when done |
-| `chitter_agent_start` | Agents | Declare task and areas of concern |
-| `chitter_decision` | Agents | Log a key decision |
-| `chitter_complete` | Agents | Mark task complete |
+The hooks handle most cases automatically. Use MCP tools when you want explicit control.
 
 ## Requirements
 
 - Claude Code
 - Python 3.10+
-- uv (installed automatically)
 
 ## Uninstall
 

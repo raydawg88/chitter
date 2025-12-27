@@ -91,6 +91,7 @@ install_uv() {
 create_directories() {
     print_info "Creating directories..."
     mkdir -p "$CHITTER_DIR/workflows"
+    mkdir -p "$CHITTER_DIR/hooks"
     mkdir -p "$CLAUDE_DIR"
     print_success "Created $CHITTER_DIR"
 }
@@ -119,6 +120,106 @@ install_server() {
 
     # Write version file
     echo "$VERSION" > "$CHITTER_DIR/version"
+}
+
+# Install hooks
+install_hooks() {
+    print_info "Installing coordination hooks..."
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    # Copy hook helper
+    if [ -f "$SCRIPT_DIR/hook.py" ]; then
+        cp "$SCRIPT_DIR/hook.py" "$CHITTER_DIR/hook.py"
+    else
+        REPO_URL="https://raw.githubusercontent.com/raydawg88/chitter/main/hook.py"
+        curl -fsSL "$REPO_URL" -o "$CHITTER_DIR/hook.py" 2>/dev/null
+    fi
+
+    # Copy hook scripts
+    if [ -f "$SCRIPT_DIR/hooks/pre-task.sh" ]; then
+        cp "$SCRIPT_DIR/hooks/pre-task.sh" "$CHITTER_DIR/hooks/pre-task.sh"
+        cp "$SCRIPT_DIR/hooks/post-task.sh" "$CHITTER_DIR/hooks/post-task.sh"
+    else
+        # Create inline
+        cat > "$CHITTER_DIR/hooks/pre-task.sh" << 'HOOK'
+#!/bin/bash
+python3 ~/.chitter/hook.py pre
+HOOK
+        cat > "$CHITTER_DIR/hooks/post-task.sh" << 'HOOK'
+#!/bin/bash
+python3 ~/.chitter/hook.py post
+HOOK
+    fi
+
+    chmod +x "$CHITTER_DIR/hooks/pre-task.sh"
+    chmod +x "$CHITTER_DIR/hooks/post-task.sh"
+
+    # Create default config
+    cat > "$CHITTER_DIR/config.json" << 'CONFIG'
+{
+  "mode": "nudge"
+}
+CONFIG
+
+    print_success "Hooks installed"
+}
+
+# Configure hooks in Claude settings
+configure_hooks() {
+    print_info "Configuring Claude Code hooks..."
+
+    SETTINGS_FILE="$CLAUDE_DIR/settings.local.json"
+
+    # Create or update settings
+    python3 << EOF
+import json
+from pathlib import Path
+
+settings_path = Path("$SETTINGS_FILE")
+
+# Load existing settings or create new
+if settings_path.exists():
+    try:
+        settings = json.loads(settings_path.read_text())
+    except:
+        settings = {}
+else:
+    settings = {}
+
+# Ensure hooks structure exists
+if "hooks" not in settings:
+    settings["hooks"] = {}
+
+# Add PreToolUse hook for Task
+if "PreToolUse" not in settings["hooks"]:
+    settings["hooks"]["PreToolUse"] = []
+
+# Check if chitter hook already exists
+pre_hooks = settings["hooks"]["PreToolUse"]
+chitter_pre = [h for h in pre_hooks if "chitter" in h.get("command", "")]
+if not chitter_pre:
+    pre_hooks.append({
+        "matcher": "Task",
+        "command": "bash $CHITTER_DIR/hooks/pre-task.sh"
+    })
+
+# Add PostToolUse hook for Task
+if "PostToolUse" not in settings["hooks"]:
+    settings["hooks"]["PostToolUse"] = []
+
+post_hooks = settings["hooks"]["PostToolUse"]
+chitter_post = [h for h in post_hooks if "chitter" in h.get("command", "")]
+if not chitter_post:
+    post_hooks.append({
+        "matcher": "Task",
+        "command": "bash $CHITTER_DIR/hooks/post-task.sh"
+    })
+
+settings_path.write_text(json.dumps(settings, indent=2))
+EOF
+
+    print_success "Hooks configured in Claude Code"
 }
 
 # Update MCP configuration
@@ -268,6 +369,35 @@ uninstall() {
     echo "Uninstalling Chitter..."
     echo ""
 
+    # Remove hooks from settings
+    SETTINGS_FILE="$CLAUDE_DIR/settings.local.json"
+    if [ -f "$SETTINGS_FILE" ]; then
+        print_info "Removing hooks from settings..."
+        python3 << EOF
+import json
+from pathlib import Path
+
+settings_path = Path("$SETTINGS_FILE")
+if settings_path.exists():
+    settings = json.loads(settings_path.read_text())
+    if "hooks" in settings:
+        # Remove chitter hooks from PreToolUse
+        if "PreToolUse" in settings["hooks"]:
+            settings["hooks"]["PreToolUse"] = [
+                h for h in settings["hooks"]["PreToolUse"]
+                if "chitter" not in h.get("command", "")
+            ]
+        # Remove chitter hooks from PostToolUse
+        if "PostToolUse" in settings["hooks"]:
+            settings["hooks"]["PostToolUse"] = [
+                h for h in settings["hooks"]["PostToolUse"]
+                if "chitter" not in h.get("command", "")
+            ]
+    settings_path.write_text(json.dumps(settings, indent=2))
+EOF
+        print_success "Removed hooks"
+    fi
+
     # Remove from MCP config
     if [ -f "$MCP_CONFIG" ]; then
         print_info "Removing from MCP config..."
@@ -327,6 +457,8 @@ install() {
     install_uv || exit 1
     create_directories
     install_server
+    install_hooks
+    configure_hooks
     configure_mcp
     inject_protocol
     verify_install
