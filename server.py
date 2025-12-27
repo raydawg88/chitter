@@ -31,9 +31,17 @@ from mcp.types import Tool, TextContent
 # State directory
 CHITTER_DIR = Path.home() / ".chitter"
 WORKFLOWS_DIR = CHITTER_DIR / "workflows"
+LOG_FILE = CHITTER_DIR / "chitter.log"
 
 # Ensure directories exist
 WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def log(message: str) -> None:
+    """Append timestamped message to log file."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{timestamp}] {message}\n")
 
 server = Server("chitter")
 
@@ -331,6 +339,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     if name == "chitter_workflow_start":
         workflow_id = str(uuid.uuid4())[:8]
         now = datetime.now().isoformat()
+        log(f"WORKFLOW START: {workflow_id} - {arguments['description']}")
 
         workflow = {
             "workflow_id": workflow_id,
@@ -375,6 +384,7 @@ After all agents complete, call chitter_workflow_review("{workflow_id}") to chec
 
     elif name == "chitter_workflow_review":
         workflow_id = arguments["workflow_id"]
+        log(f"WORKFLOW REVIEW: {workflow_id}")
         workflow = load_workflow(workflow_id)
 
         if not workflow:
@@ -466,12 +476,12 @@ Workflow state cleared."""
 
     elif name == "chitter_agent_start":
         workflow_id = arguments["workflow_id"]
+        agent_id = arguments["agent_id"]
+        log(f"AGENT START: {agent_id} in {workflow_id} - {arguments['task_summary']}")
         workflow = load_workflow(workflow_id)
 
         if not workflow:
             return [TextContent(type="text", text=f"Workflow {workflow_id} not found. Was it created with chitter_workflow_start?")]
-
-        agent_id = arguments["agent_id"]
 
         workflow["agents"][agent_id] = {
             "task": arguments["task_summary"],
@@ -510,12 +520,12 @@ Remember to call chitter_decision for key choices and chitter_complete when done
 
     elif name == "chitter_decision":
         workflow_id = arguments["workflow_id"]
+        agent_id = arguments["agent_id"]
+        log(f"DECISION: [{agent_id}] {arguments['decision_type']} - {arguments['decision'][:60]}")
         workflow = load_workflow(workflow_id)
 
         if not workflow:
             return [TextContent(type="text", text=f"Workflow {workflow_id} not found")]
-
-        agent_id = arguments["agent_id"]
 
         if agent_id not in workflow["agents"]:
             return [TextContent(type="text", text=f"Agent {agent_id} not registered. Call chitter_agent_start first.")]
@@ -539,12 +549,12 @@ Remember to call chitter_decision for key choices and chitter_complete when done
 
     elif name == "chitter_complete":
         workflow_id = arguments["workflow_id"]
+        agent_id = arguments["agent_id"]
+        log(f"AGENT COMPLETE: {agent_id} - {arguments['summary'][:60]}")
         workflow = load_workflow(workflow_id)
 
         if not workflow:
             return [TextContent(type="text", text=f"Workflow {workflow_id} not found")]
-
-        agent_id = arguments["agent_id"]
 
         if agent_id not in workflow["agents"]:
             return [TextContent(type="text", text=f"Agent {agent_id} not registered")]
