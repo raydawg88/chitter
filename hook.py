@@ -223,39 +223,47 @@ def handle_pre(tool_input: dict, tool_use_id: str = "") -> None:
             # Auto-create workflow for parallel work
             workflow = create_workflow(f"Auto-coordinated: {description}")
 
-        # Add this agent
-        add_agent_to_workflow(workflow, agent_id, description or prompt[:200], subagent_type)
+        # Add this agent - store full description, or first 500 chars of prompt
+        task_summary = description if description else prompt[:500]
+        add_agent_to_workflow(workflow, agent_id, task_summary, subagent_type)
 
         if mode in ["nudge", "block"]:
-            # Output context for Claude to see
-            other_agents = "\n".join([
-                f"  • {a['id']} ({a.get('subagent_type', '?')}): {a.get('task', '?')[:60]}"
-                for a in active_agents
-            ])
+            # Output context for Claude to see - show FULL task descriptions
+            agent_details = []
+            for a in active_agents:
+                agent_type = a.get('subagent_type', 'unknown')
+                task = a.get('task', 'no description')
+                agent_details.append(f"  [{agent_type}] {task}")
+
+            other_agents = "\n".join(agent_details)
 
             print(f"""
 ⚡ CHITTER: Parallel work detected
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Workflow: {workflow['workflow_id']}
-Active agents:
-{other_agents}
-  • {agent_id} ({subagent_type}): [THIS AGENT]
 
-💡 Consider including in this agent's prompt:
-   "Other agents are working on this project. Coordinate on shared interfaces, APIs, and data formats."
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Other agents currently working on this project:
+{other_agents}
+
+This agent ({subagent_type}): Starting now
+
+⚠️  COORDINATE: These agents are working in parallel. Ensure your work
+   is compatible with theirs. Consider shared interfaces, data formats,
+   API contracts, and naming conventions.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
     else:
         # First agent or no active workflow
+        task_summary = description if description else prompt[:500]
         if workflow:
             # Workflow exists, add this agent
-            add_agent_to_workflow(workflow, agent_id, description or prompt[:200], subagent_type)
+            add_agent_to_workflow(workflow, agent_id, task_summary, subagent_type)
             log(f"AGENT START: {agent_id} - first in workflow {workflow['workflow_id']}")
         else:
             # No workflow, first agent - just track silently
             # Create workflow but don't output anything (single agent work)
             workflow = create_workflow(f"Single agent: {description}")
-            add_agent_to_workflow(workflow, agent_id, description or prompt[:200], subagent_type)
+            add_agent_to_workflow(workflow, agent_id, task_summary, subagent_type)
             log(f"SINGLE AGENT: {agent_id} - workflow {workflow['workflow_id']}")
 
     # Store agent_id mapped to tool_use_id for PostToolUse to pick up
