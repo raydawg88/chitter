@@ -200,7 +200,7 @@ pre_hooks = settings["hooks"]["PreToolUse"]
 chitter_pre = [h for h in pre_hooks if any("chitter" in hook.get("command", "") for hook in h.get("hooks", []))]
 if not chitter_pre:
     pre_hooks.append({
-        "matcher": {"tools": ["Task"]},
+        "matcher": "Task",
         "hooks": [
             {
                 "type": "command",
@@ -217,7 +217,7 @@ post_hooks = settings["hooks"]["PostToolUse"]
 chitter_post = [h for h in post_hooks if any("chitter" in hook.get("command", "") for hook in h.get("hooks", []))]
 if not chitter_post:
     post_hooks.append({
-        "matcher": {"tools": ["Task"]},
+        "matcher": "Task",
         "hooks": [
             {
                 "type": "command",
