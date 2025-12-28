@@ -145,7 +145,7 @@ def extract_decisions(output: str) -> list[str]:
     return decisions[:10]  # Cap at 10
 
 
-def handle_pre(tool_input: dict) -> None:
+def handle_pre(tool_input: dict, tool_use_id: str = "") -> None:
     """Handle PreToolUse for Task tool."""
     config = get_config()
     mode = config.get("mode", "nudge")
@@ -155,9 +155,8 @@ def handle_pre(tool_input: dict) -> None:
     subagent_type = tool_input.get("subagent_type", "unknown")
     description = tool_input.get("description", "")
 
-    # Generate agent ID
-    import uuid
-    agent_id = f"{subagent_type}-{str(uuid.uuid4())[:4]}"
+    # Use tool_use_id as agent_id (unique per Task call)
+    agent_id = tool_use_id[:12] if tool_use_id else f"{subagent_type}-{str(__import__('uuid').uuid4())[:4]}"
 
     # Check for active workflow
     workflow = get_active_workflow()
@@ -219,26 +218,28 @@ Active agents:
     return agent_id
 
 
-def handle_post(tool_input: dict, tool_output, tool_use_id: str = None) -> None:
+def handle_post(tool_input: dict, tool_output, tool_use_id: str = "") -> None:
     """Handle PostToolUse for Task tool."""
-    # Find the agent by matching subagent_type and task
     subagent_type = tool_input.get("subagent_type", "unknown")
-    description = tool_input.get("description", "")
+
+    # Use tool_use_id to find the matching agent (same ID used in PRE)
+    agent_id = tool_use_id[:12] if tool_use_id else None
 
     # Try to find matching agent in active workflow
     workflow = get_active_workflow()
     if not workflow:
         return
 
-    # Find the agent that matches this task (by type and working status)
-    agent_id = None
-    for aid, agent in workflow.get("agents", {}).items():
-        if agent.get("status") == "working" and agent.get("subagent_type") == subagent_type:
-            agent_id = aid
-            break
+    # If agent_id from tool_use_id not in workflow, try matching by type
+    if agent_id not in workflow.get("agents", {}):
+        # Fallback: find by type and working status
+        for aid, agent in workflow.get("agents", {}).items():
+            if agent.get("status") == "working" and agent.get("subagent_type") == subagent_type:
+                agent_id = aid
+                break
 
-    if not agent_id:
-        log(f"POST: Could not find working agent for {subagent_type}")
+    if not agent_id or agent_id not in workflow.get("agents", {}):
+        log(f"POST: Could not find agent {agent_id} for {subagent_type}")
         return
 
     if agent_id in workflow.get("agents", {}):
@@ -292,11 +293,13 @@ def main():
         try:
             data = json.loads(raw_input)
             tool_input = data.get("tool_input", {})
-            log(f"PRE: tool={data.get('tool_name')} type={tool_input.get('subagent_type')} desc={tool_input.get('description', '')}")
+            tool_use_id = data.get("tool_use_id", "")
+            log(f"PRE: {tool_input.get('subagent_type')} ({tool_input.get('description', '')}) id={tool_use_id[:8]}")
         except Exception as e:
             log(f"PRE PARSE ERROR: {e}")
             tool_input = {}
-        handle_pre(tool_input)
+            tool_use_id = ""
+        handle_pre(tool_input, tool_use_id)
 
     elif command == "post":
         raw_input = sys.stdin.read()
