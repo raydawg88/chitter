@@ -35,9 +35,15 @@ PROJECT_ROOTS = [
 ]
 
 
-def extract_project_from_prompt(prompt: str) -> str:
-    """Try to extract project name from file paths mentioned in the prompt."""
+def extract_project_from_prompt(prompt: str) -> tuple[str, str]:
+    """Try to extract project name and path from file paths mentioned in the prompt.
+    Returns (project_name, first_path_found)."""
     import re
+
+    # Find the first file path in the prompt
+    path_pattern = r"(/[^\s\"']+)"
+    path_match = re.search(path_pattern, prompt)
+    first_path = path_match.group(1) if path_match else ""
 
     # Look for paths that include known project roots
     for root in PROJECT_ROOTS:
@@ -45,18 +51,18 @@ def extract_project_from_prompt(prompt: str) -> str:
         pattern = re.escape(root) + r"([^/\s\"']+)"
         match = re.search(pattern, prompt)
         if match:
-            return match.group(1)
+            return match.group(1), first_path
 
     # Fallback: look for any absolute path and extract a reasonable folder name
     # Match paths like /Users/.../something/file.ext
-    path_match = re.search(r"/Users/[^/]+/[^/]+/([^/\s\"']+)", prompt)
-    if path_match:
-        folder = path_match.group(1)
+    folder_match = re.search(r"/Users/[^/]+/[^/]+/([^/\s\"']+)", prompt)
+    if folder_match:
+        folder = folder_match.group(1)
         # Skip common non-project folders
         if folder not in ["Library", "Documents", "Desktop", "Downloads", ".claude", ".chitter"]:
-            return folder
+            return folder, first_path
 
-    return "unknown"
+    return "unknown", first_path
 
 
 def log(message: str) -> None:
@@ -388,9 +394,9 @@ def main():
 
             # Try to extract project from file paths in the prompt
             prompt = tool_input.get("prompt", "")
-            project = extract_project_from_prompt(prompt)
+            project, file_path = extract_project_from_prompt(prompt)
 
-            log(f"[{session_id}] PRE: {tool_input.get('subagent_type')} ({tool_input.get('description', '')}) project={project}")
+            log(f"[{session_id}] PRE: {tool_input.get('subagent_type')} ({tool_input.get('description', '')}) project={project} path={file_path[:80] if file_path else 'none'}")
         except Exception as e:
             log(f"PRE PARSE ERROR: {e}")
             tool_input = {}
@@ -409,7 +415,7 @@ def main():
 
             # Try to extract project from file paths in the prompt
             prompt = tool_input.get("prompt", "")
-            project = extract_project_from_prompt(prompt)
+            project, file_path = extract_project_from_prompt(prompt)
 
             # Convert response to string if needed
             if isinstance(tool_response, dict):
@@ -420,7 +426,7 @@ def main():
             # Log a meaningful summary of what the agent did
             agent_type = tool_input.get('subagent_type', 'unknown')
             desc = tool_input.get('description', '')
-            log(f"[{session_id}] POST: {agent_type} ({desc}) project={project}")
+            log(f"[{session_id}] POST: {agent_type} ({desc}) project={project} path={file_path[:80] if file_path else 'none'}")
 
             handle_post(tool_input, tool_response_str, tool_use_id, session_id)
         except Exception as e:
