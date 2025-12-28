@@ -86,63 +86,108 @@ def create_workflow(description: str) -> dict:
 
 def add_agent_to_workflow(workflow: dict, agent_id: str, task: str, subagent_type: str) -> None:
     """Add an agent to the workflow."""
-    workflow["agents"][agent_id] = {
+    path = WORKFLOWS_DIR / f"{workflow['workflow_id']}.json"
+
+    # Re-read to avoid race conditions with parallel agents
+    try:
+        current = json.loads(path.read_text())
+    except:
+        current = workflow
+
+    current["agents"][agent_id] = {
         "task": task,
         "subagent_type": subagent_type,
         "status": "working",
         "started_at": datetime.now().isoformat(),
         "decisions": []
     }
-    path = WORKFLOWS_DIR / f"{workflow['workflow_id']}.json"
-    path.write_text(json.dumps(workflow, indent=2))
+    path.write_text(json.dumps(current, indent=2))
     log(f"AGENT REGISTERED: {agent_id} ({subagent_type}) - {task}")
 
 
 def complete_agent(workflow: dict, agent_id: str, output) -> None:
     """Mark agent as complete and extract any decisions from output."""
-    if agent_id in workflow["agents"]:
-        workflow["agents"][agent_id]["status"] = "complete"
-        workflow["agents"][agent_id]["completed_at"] = datetime.now().isoformat()
+    path = WORKFLOWS_DIR / f"{workflow['workflow_id']}.json"
 
-        # Handle different output types
-        if isinstance(output, str):
-            output_str = output
-        elif isinstance(output, dict):
-            output_str = json.dumps(output)
-        else:
-            output_str = str(output) if output else ""
+    # Re-read to avoid race conditions
+    try:
+        current = json.loads(path.read_text())
+    except:
+        current = workflow
 
-        workflow["agents"][agent_id]["output_summary"] = output_str[:2000] if output_str else ""
+    if agent_id not in current["agents"]:
+        log(f"COMPLETE FAILED: {agent_id} not in workflow")
+        return
 
-        # Simple heuristic: look for decision-like phrases
-        decisions = extract_decisions(output_str)
-        workflow["agents"][agent_id]["decisions"] = decisions
+    current["agents"][agent_id]["status"] = "complete"
+    current["agents"][agent_id]["completed_at"] = datetime.now().isoformat()
 
-        path = WORKFLOWS_DIR / f"{workflow['workflow_id']}.json"
-        path.write_text(json.dumps(workflow, indent=2))
-        log(f"AGENT COMPLETE: {agent_id} - {len(decisions)} decisions")
+    # Handle different output types
+    if isinstance(output, str):
+        output_str = output
+    elif isinstance(output, dict):
+        output_str = json.dumps(output)
+    else:
+        output_str = str(output) if output else ""
+
+    current["agents"][agent_id]["output_summary"] = output_str[:2000] if output_str else ""
+
+    # Extract actual content and find decisions
+    decisions = extract_decisions(output_str)
+    current["agents"][agent_id]["decisions"] = decisions
+
+    path.write_text(json.dumps(current, indent=2))
+    log(f"AGENT COMPLETE: {agent_id} - {len(decisions)} decisions")
+
+
+def extract_actual_content(output: str) -> str:
+    """Extract actual text content from Claude's response format."""
+    if not output:
+        return ""
+
+    # Try to parse as JSON and extract nested content
+    try:
+        data = json.loads(output)
+        # Check for content array (Claude's format)
+        if isinstance(data, dict) and "content" in data:
+            content = data["content"]
+            if isinstance(content, list):
+                texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+                return "\n".join(texts)
+        # Maybe it's just a simple response
+        if isinstance(data, dict) and "text" in data:
+            return data["text"]
+    except:
+        pass
+
+    # Not JSON or couldn't parse - return as-is
+    return output
 
 
 def extract_decisions(output: str) -> list[str]:
     """Extract decision-like statements from agent output."""
-    if not output:
+    # First extract actual text content
+    text = extract_actual_content(output)
+    if not text:
         return []
 
     decisions = []
     indicators = [
-        "decided to", "chose ", "using ", "created ", "implemented ",
-        "will use", "went with", "selected ", "picked "
+        "decided", "chose", "chosen", "using", "created", "implemented",
+        "will use", "went with", "selected", "picked", "recommend",
+        "should use", "best approach", "opted for", "settled on",
+        "design direction", "final design", "winning concept"
     ]
 
-    lines = output.split('\n')
+    lines = text.split('\n')
     for line in lines:
         line_lower = line.lower()
         for indicator in indicators:
-            if indicator in line_lower and len(line) < 200:
+            if indicator in line_lower and 20 < len(line) < 300:
                 decisions.append(line.strip())
                 break
 
-    return decisions[:10]  # Cap at 10
+    return decisions[:15]  # Cap at 15
 
 
 def handle_pre(tool_input: dict, tool_use_id: str = "") -> None:
