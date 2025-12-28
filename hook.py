@@ -98,20 +98,29 @@ def add_agent_to_workflow(workflow: dict, agent_id: str, task: str, subagent_typ
     log(f"AGENT REGISTERED: {agent_id} ({subagent_type}) - {task}")
 
 
-def complete_agent(workflow: dict, agent_id: str, output: str) -> None:
+def complete_agent(workflow: dict, agent_id: str, output) -> None:
     """Mark agent as complete and extract any decisions from output."""
     if agent_id in workflow["agents"]:
         workflow["agents"][agent_id]["status"] = "complete"
         workflow["agents"][agent_id]["completed_at"] = datetime.now().isoformat()
-        workflow["agents"][agent_id]["output_summary"] = output[:2000] if output else ""
+
+        # Handle different output types
+        if isinstance(output, str):
+            output_str = output
+        elif isinstance(output, dict):
+            output_str = json.dumps(output)
+        else:
+            output_str = str(output) if output else ""
+
+        workflow["agents"][agent_id]["output_summary"] = output_str[:2000] if output_str else ""
 
         # Simple heuristic: look for decision-like phrases
-        decisions = extract_decisions(output)
+        decisions = extract_decisions(output_str)
         workflow["agents"][agent_id]["decisions"] = decisions
 
         path = WORKFLOWS_DIR / f"{workflow['workflow_id']}.json"
         path.write_text(json.dumps(workflow, indent=2))
-        log(f"AGENT COMPLETE: {agent_id} - {len(decisions)} decisions extracted")
+        log(f"AGENT COMPLETE: {agent_id} - {len(decisions)} decisions")
 
 
 def extract_decisions(output: str) -> list[str]:
@@ -205,24 +214,34 @@ Active agents:
             add_agent_to_workflow(workflow, agent_id, description or prompt[:200], subagent_type)
             log(f"SINGLE AGENT: {agent_id} - workflow {workflow['workflow_id']}")
 
-    # Store agent_id for PostToolUse to pick up
-    state_file = CHITTER_DIR / "current_agent.txt"
-    state_file.write_text(agent_id)
+    # Store agent_id mapped to tool_use_id for PostToolUse to pick up
+    # This handles parallel agents correctly
+    return agent_id
 
 
-def handle_post(tool_input: dict, tool_output: str) -> None:
+def handle_post(tool_input: dict, tool_output, tool_use_id: str = None) -> None:
     """Handle PostToolUse for Task tool."""
-    # Get the agent ID we stored
-    state_file = CHITTER_DIR / "current_agent.txt"
-    if not state_file.exists():
+    # Find the agent by matching subagent_type and task
+    subagent_type = tool_input.get("subagent_type", "unknown")
+    description = tool_input.get("description", "")
+
+    # Try to find matching agent in active workflow
+    workflow = get_active_workflow()
+    if not workflow:
         return
 
-    agent_id = state_file.read_text().strip()
-    state_file.unlink()  # Clean up
+    # Find the agent that matches this task (by type and working status)
+    agent_id = None
+    for aid, agent in workflow.get("agents", {}).items():
+        if agent.get("status") == "working" and agent.get("subagent_type") == subagent_type:
+            agent_id = aid
+            break
 
-    # Find the workflow with this agent
-    workflow = get_active_workflow()
-    if workflow and agent_id in workflow.get("agents", {}):
+    if not agent_id:
+        log(f"POST: Could not find working agent for {subagent_type}")
+        return
+
+    if agent_id in workflow.get("agents", {}):
         complete_agent(workflow, agent_id, tool_output)
 
         # Check if all agents are complete
@@ -285,17 +304,25 @@ def main():
             data = json.loads(raw_input)
             tool_input = data.get("tool_input", {})
             tool_response = data.get("tool_response", "")
+            tool_use_id = data.get("tool_use_id", "")
+
+            # Convert response to string if needed
+            if isinstance(tool_response, dict):
+                tool_response_str = json.dumps(tool_response)
+            else:
+                tool_response_str = str(tool_response) if tool_response else ""
+
             # Log a meaningful summary of what the agent did
             agent_type = tool_input.get('subagent_type', 'unknown')
             desc = tool_input.get('description', '')
-            # Get first 300 chars of response as summary
-            summary = tool_response[:300].replace('\n', ' ').strip() if tool_response else 'no output'
-            log(f"POST: {agent_type} ({desc}) → {summary}...")
+            summary = tool_response_str[:300].replace('\n', ' ').strip() if tool_response_str else 'no output'
+            log(f"POST: {agent_type} ({desc}) → {summary}")
+
+            handle_post(tool_input, tool_response_str, tool_use_id)
         except Exception as e:
             log(f"POST PARSE ERROR: {e}")
-            tool_input = {}
-            tool_response = ""
-        handle_post(tool_input, tool_response)
+            import traceback
+            log(f"POST TRACEBACK: {traceback.format_exc()}")
 
 
 if __name__ == "__main__":
