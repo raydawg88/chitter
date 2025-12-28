@@ -95,7 +95,7 @@ def add_agent_to_workflow(workflow: dict, agent_id: str, task: str, subagent_typ
     }
     path = WORKFLOWS_DIR / f"{workflow['workflow_id']}.json"
     path.write_text(json.dumps(workflow, indent=2))
-    log(f"AGENT REGISTERED: {agent_id} ({subagent_type}) - {task[:50]}")
+    log(f"AGENT REGISTERED: {agent_id} ({subagent_type}) - {task}")
 
 
 def complete_agent(workflow: dict, agent_id: str, output: str) -> None:
@@ -103,7 +103,7 @@ def complete_agent(workflow: dict, agent_id: str, output: str) -> None:
     if agent_id in workflow["agents"]:
         workflow["agents"][agent_id]["status"] = "complete"
         workflow["agents"][agent_id]["completed_at"] = datetime.now().isoformat()
-        workflow["agents"][agent_id]["output_summary"] = output[:500] if output else ""
+        workflow["agents"][agent_id]["output_summary"] = output[:2000] if output else ""
 
         # Simple heuristic: look for decision-like phrases
         decisions = extract_decisions(output)
@@ -171,7 +171,7 @@ def handle_pre(tool_input: dict) -> None:
             workflow = create_workflow(f"Auto-coordinated: {description}")
 
         # Add this agent
-        add_agent_to_workflow(workflow, agent_id, prompt[:200], subagent_type)
+        add_agent_to_workflow(workflow, agent_id, description or prompt[:200], subagent_type)
 
         if mode in ["nudge", "block"]:
             # Output context for Claude to see
@@ -196,13 +196,13 @@ Active agents:
         # First agent or no active workflow
         if workflow:
             # Workflow exists, add this agent
-            add_agent_to_workflow(workflow, agent_id, prompt[:200], subagent_type)
+            add_agent_to_workflow(workflow, agent_id, description or prompt[:200], subagent_type)
             log(f"AGENT START: {agent_id} - first in workflow {workflow['workflow_id']}")
         else:
             # No workflow, first agent - just track silently
             # Create workflow but don't output anything (single agent work)
             workflow = create_workflow(f"Single agent: {description}")
-            add_agent_to_workflow(workflow, agent_id, prompt[:200], subagent_type)
+            add_agent_to_workflow(workflow, agent_id, description or prompt[:200], subagent_type)
             log(f"SINGLE AGENT: {agent_id} - workflow {workflow['workflow_id']}")
 
     # Store agent_id for PostToolUse to pick up
@@ -273,7 +273,7 @@ def main():
         try:
             data = json.loads(raw_input)
             tool_input = data.get("tool_input", {})
-            log(f"PRE: tool={data.get('tool_name')} type={tool_input.get('subagent_type')} desc={tool_input.get('description', '')[:50]}")
+            log(f"PRE: tool={data.get('tool_name')} type={tool_input.get('subagent_type')} desc={tool_input.get('description', '')}")
         except Exception as e:
             log(f"PRE PARSE ERROR: {e}")
             tool_input = {}
@@ -285,7 +285,12 @@ def main():
             data = json.loads(raw_input)
             tool_input = data.get("tool_input", {})
             tool_response = data.get("tool_response", "")
-            log(f"POST: type={tool_input.get('subagent_type')} response_len={len(tool_response)}")
+            # Log a meaningful summary of what the agent did
+            agent_type = tool_input.get('subagent_type', 'unknown')
+            desc = tool_input.get('description', '')
+            # Get first 300 chars of response as summary
+            summary = tool_response[:300].replace('\n', ' ').strip() if tool_response else 'no output'
+            log(f"POST: {agent_type} ({desc}) → {summary}...")
         except Exception as e:
             log(f"POST PARSE ERROR: {e}")
             tool_input = {}
