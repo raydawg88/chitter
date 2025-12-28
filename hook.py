@@ -259,22 +259,38 @@ def main():
 
     command = sys.argv[1]
 
+    # Claude Code passes JSON with structure:
+    # {
+    #   "session_id": "...",
+    #   "hook_event_name": "PreToolUse" or "PostToolUse",
+    #   "tool_name": "Task",
+    #   "tool_input": { "description": "...", "prompt": "...", "subagent_type": "..." },
+    #   "tool_response": "..." (only for PostToolUse)
+    # }
+
     if command == "pre":
-        # Read tool input from stdin
-        tool_input = json.loads(sys.stdin.read())
+        raw_input = sys.stdin.read()
+        try:
+            data = json.loads(raw_input)
+            tool_input = data.get("tool_input", {})
+            log(f"PRE: tool={data.get('tool_name')} type={tool_input.get('subagent_type')} desc={tool_input.get('description', '')[:50]}")
+        except Exception as e:
+            log(f"PRE PARSE ERROR: {e}")
+            tool_input = {}
         handle_pre(tool_input)
 
     elif command == "post":
-        # Read tool input and output
-        input_data = sys.stdin.read()
+        raw_input = sys.stdin.read()
         try:
-            data = json.loads(input_data)
+            data = json.loads(raw_input)
             tool_input = data.get("tool_input", {})
-            tool_output = data.get("tool_output", "")
-        except:
+            tool_response = data.get("tool_response", "")
+            log(f"POST: type={tool_input.get('subagent_type')} response_len={len(tool_response)}")
+        except Exception as e:
+            log(f"POST PARSE ERROR: {e}")
             tool_input = {}
-            tool_output = input_data
-        handle_post(tool_input, tool_output)
+            tool_response = ""
+        handle_post(tool_input, tool_response)
 
 
 if __name__ == "__main__":
