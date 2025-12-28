@@ -45,12 +45,15 @@ def get_config() -> dict:
     return DEFAULT_CONFIG
 
 
-def get_active_workflow() -> dict | None:
-    """Get the currently active workflow, if any."""
+def get_active_workflow(session_id: str = None) -> dict | None:
+    """Get the currently active workflow for this session, if any."""
     for path in WORKFLOWS_DIR.glob("*.json"):
         try:
             workflow = json.loads(path.read_text())
             if workflow.get("status") == "active":
+                # If session_id provided, only match workflows for this session
+                if session_id and workflow.get("session_id") != session_id:
+                    continue
                 return workflow
         except:
             pass
@@ -66,12 +69,13 @@ def get_active_agents(workflow: dict) -> list[dict]:
     return agents
 
 
-def create_workflow(description: str) -> dict:
-    """Create a new workflow."""
+def create_workflow(description: str, session_id: str = "unknown") -> dict:
+    """Create a new workflow scoped to a session."""
     import uuid
     workflow_id = str(uuid.uuid4())[:8]
     workflow = {
         "workflow_id": workflow_id,
+        "session_id": session_id,
         "description": description,
         "status": "active",
         "agents": {},
@@ -80,13 +84,14 @@ def create_workflow(description: str) -> dict:
     }
     path = WORKFLOWS_DIR / f"{workflow_id}.json"
     path.write_text(json.dumps(workflow, indent=2))
-    log(f"WORKFLOW AUTO-CREATED: {workflow_id} - {description}")
+    log(f"[{session_id}] WORKFLOW AUTO-CREATED: {workflow_id} - {description}")
     return workflow
 
 
 def add_agent_to_workflow(workflow: dict, agent_id: str, task: str, subagent_type: str) -> None:
     """Add an agent to the workflow."""
     path = WORKFLOWS_DIR / f"{workflow['workflow_id']}.json"
+    session_id = workflow.get("session_id", "unknown")
 
     # Re-read to avoid race conditions with parallel agents
     try:
@@ -102,12 +107,13 @@ def add_agent_to_workflow(workflow: dict, agent_id: str, task: str, subagent_typ
         "decisions": []
     }
     path.write_text(json.dumps(current, indent=2))
-    log(f"AGENT REGISTERED: {agent_id} ({subagent_type}) - {task}")
+    log(f"[{session_id}] AGENT REGISTERED: {agent_id} ({subagent_type}) - {task[:100]}")
 
 
 def complete_agent(workflow: dict, agent_id: str, output) -> None:
     """Mark agent as complete and extract any decisions from output."""
     path = WORKFLOWS_DIR / f"{workflow['workflow_id']}.json"
+    session_id = workflow.get("session_id", "unknown")
 
     # Re-read to avoid race conditions
     try:
@@ -116,7 +122,7 @@ def complete_agent(workflow: dict, agent_id: str, output) -> None:
         current = workflow
 
     if agent_id not in current["agents"]:
-        log(f"COMPLETE FAILED: {agent_id} not in workflow")
+        log(f"[{session_id}] COMPLETE FAILED: {agent_id} not in workflow")
         return
 
     current["agents"][agent_id]["status"] = "complete"
@@ -137,7 +143,7 @@ def complete_agent(workflow: dict, agent_id: str, output) -> None:
     current["agents"][agent_id]["decisions"] = decisions
 
     path.write_text(json.dumps(current, indent=2))
-    log(f"AGENT COMPLETE: {agent_id} - {len(decisions)} decisions")
+    log(f"[{session_id}] AGENT COMPLETE: {agent_id} - {len(decisions)} decisions")
 
 
 def extract_actual_content(output: str) -> str:
@@ -190,7 +196,7 @@ def extract_decisions(output: str) -> list[str]:
     return decisions[:15]  # Cap at 15
 
 
-def handle_pre(tool_input: dict, tool_use_id: str = "") -> None:
+def handle_pre(tool_input: dict, tool_use_id: str = "", session_id: str = "unknown") -> None:
     """Handle PreToolUse for Task tool."""
     config = get_config()
     mode = config.get("mode", "nudge")
@@ -203,8 +209,8 @@ def handle_pre(tool_input: dict, tool_use_id: str = "") -> None:
     # Use tool_use_id as agent_id (unique per Task call)
     agent_id = tool_use_id[:12] if tool_use_id else f"{subagent_type}-{str(__import__('uuid').uuid4())[:4]}"
 
-    # Check for active workflow
-    workflow = get_active_workflow()
+    # Check for active workflow FOR THIS SESSION
+    workflow = get_active_workflow(session_id)
     active_agents = get_active_agents(workflow) if workflow else []
 
     # Is this parallel work?
@@ -212,7 +218,7 @@ def handle_pre(tool_input: dict, tool_use_id: str = "") -> None:
 
     if is_parallel:
         # Multiple agents running - this is where coordination matters
-        log(f"PARALLEL DETECTED: {agent_id} joining {len(active_agents)} active agents")
+        log(f"[{session_id}] PARALLEL DETECTED: {agent_id} joining {len(active_agents)} active agents")
 
         if mode == "block" and not workflow:
             # Block mode: require explicit workflow
@@ -221,7 +227,7 @@ def handle_pre(tool_input: dict, tool_use_id: str = "") -> None:
 
         if not workflow:
             # Auto-create workflow for parallel work
-            workflow = create_workflow(f"Auto-coordinated: {description}")
+            workflow = create_workflow(f"Auto-coordinated: {description}", session_id)
 
         # Add this agent - store full description, or first 500 chars of prompt
         task_summary = description if description else prompt[:500]
@@ -258,28 +264,28 @@ This agent ({subagent_type}): Starting now
         if workflow:
             # Workflow exists, add this agent
             add_agent_to_workflow(workflow, agent_id, task_summary, subagent_type)
-            log(f"AGENT START: {agent_id} - first in workflow {workflow['workflow_id']}")
+            log(f"[{session_id}] AGENT START: {agent_id} - first in workflow {workflow['workflow_id']}")
         else:
             # No workflow, first agent - just track silently
             # Create workflow but don't output anything (single agent work)
-            workflow = create_workflow(f"Single agent: {description}")
+            workflow = create_workflow(f"Single agent: {description}", session_id)
             add_agent_to_workflow(workflow, agent_id, task_summary, subagent_type)
-            log(f"SINGLE AGENT: {agent_id} - workflow {workflow['workflow_id']}")
+            log(f"[{session_id}] SINGLE AGENT: {agent_id} - workflow {workflow['workflow_id']}")
 
     # Store agent_id mapped to tool_use_id for PostToolUse to pick up
     # This handles parallel agents correctly
     return agent_id
 
 
-def handle_post(tool_input: dict, tool_output, tool_use_id: str = "") -> None:
+def handle_post(tool_input: dict, tool_output, tool_use_id: str = "", session_id: str = "unknown") -> None:
     """Handle PostToolUse for Task tool."""
     subagent_type = tool_input.get("subagent_type", "unknown")
 
     # Use tool_use_id to find the matching agent (same ID used in PRE)
     agent_id = tool_use_id[:12] if tool_use_id else None
 
-    # Try to find matching agent in active workflow
-    workflow = get_active_workflow()
+    # Try to find matching agent in active workflow FOR THIS SESSION
+    workflow = get_active_workflow(session_id)
     if not workflow:
         return
 
@@ -292,7 +298,7 @@ def handle_post(tool_input: dict, tool_output, tool_use_id: str = "") -> None:
                 break
 
     if not agent_id or agent_id not in workflow.get("agents", {}):
-        log(f"POST: Could not find agent {agent_id} for {subagent_type}")
+        log(f"[{session_id}] POST: Could not find agent {agent_id} for {subagent_type}")
         return
 
     if agent_id in workflow.get("agents", {}):
@@ -304,7 +310,7 @@ def handle_post(tool_input: dict, tool_output, tool_use_id: str = "") -> None:
 
         if all_complete and len(agents) > 1:
             # Parallel work finished - surface summary
-            log(f"WORKFLOW COMPLETE: {workflow['workflow_id']} - {len(agents)} agents")
+            log(f"[{session_id}] WORKFLOW COMPLETE: {workflow['workflow_id']} - {len(agents)} agents")
 
             decisions = []
             for aid, a in agents.items():
@@ -347,12 +353,17 @@ def main():
             data = json.loads(raw_input)
             tool_input = data.get("tool_input", {})
             tool_use_id = data.get("tool_use_id", "")
-            log(f"PRE: {tool_input.get('subagent_type')} ({tool_input.get('description', '')}) id={tool_use_id[:8]}")
+            session_id = data.get("session_id", "unknown")[:8]  # First 8 chars for readability
+            cwd = data.get("cwd", "")  # Working directory if available
+            project = Path(cwd).name if cwd else "unknown"
+
+            log(f"[{session_id}] PRE: {tool_input.get('subagent_type')} ({tool_input.get('description', '')}) project={project}")
         except Exception as e:
             log(f"PRE PARSE ERROR: {e}")
             tool_input = {}
             tool_use_id = ""
-        handle_pre(tool_input, tool_use_id)
+            session_id = "unknown"
+        handle_pre(tool_input, tool_use_id, session_id)
 
     elif command == "post":
         raw_input = sys.stdin.read()
@@ -361,6 +372,9 @@ def main():
             tool_input = data.get("tool_input", {})
             tool_response = data.get("tool_response", "")
             tool_use_id = data.get("tool_use_id", "")
+            session_id = data.get("session_id", "unknown")[:8]
+            cwd = data.get("cwd", "")
+            project = Path(cwd).name if cwd else "unknown"
 
             # Convert response to string if needed
             if isinstance(tool_response, dict):
@@ -372,9 +386,9 @@ def main():
             agent_type = tool_input.get('subagent_type', 'unknown')
             desc = tool_input.get('description', '')
             summary = tool_response_str[:300].replace('\n', ' ').strip() if tool_response_str else 'no output'
-            log(f"POST: {agent_type} ({desc}) → {summary}")
+            log(f"[{session_id}] POST: {agent_type} ({desc}) project={project}")
 
-            handle_post(tool_input, tool_response_str, tool_use_id)
+            handle_post(tool_input, tool_response_str, tool_use_id, session_id)
         except Exception as e:
             log(f"POST PARSE ERROR: {e}")
             import traceback
