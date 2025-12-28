@@ -195,13 +195,18 @@ if "hooks" not in settings:
 if "PreToolUse" not in settings["hooks"]:
     settings["hooks"]["PreToolUse"] = []
 
-# Check if chitter hook already exists
+# Check if chitter hook already exists (check nested structure)
 pre_hooks = settings["hooks"]["PreToolUse"]
-chitter_pre = [h for h in pre_hooks if "chitter" in h.get("command", "")]
+chitter_pre = [h for h in pre_hooks if any("chitter" in hook.get("command", "") for hook in h.get("hooks", []))]
 if not chitter_pre:
     pre_hooks.append({
-        "matcher": "Task",
-        "command": "bash $CHITTER_DIR/hooks/pre-task.sh"
+        "matcher": {"tools": ["Task"]},
+        "hooks": [
+            {
+                "type": "command",
+                "command": "bash $CHITTER_DIR/hooks/pre-task.sh"
+            }
+        ]
     })
 
 # Add PostToolUse hook for Task
@@ -209,11 +214,16 @@ if "PostToolUse" not in settings["hooks"]:
     settings["hooks"]["PostToolUse"] = []
 
 post_hooks = settings["hooks"]["PostToolUse"]
-chitter_post = [h for h in post_hooks if "chitter" in h.get("command", "")]
+chitter_post = [h for h in post_hooks if any("chitter" in hook.get("command", "") for hook in h.get("hooks", []))]
 if not chitter_post:
     post_hooks.append({
-        "matcher": "Task",
-        "command": "bash $CHITTER_DIR/hooks/post-task.sh"
+        "matcher": {"tools": ["Task"]},
+        "hooks": [
+            {
+                "type": "command",
+                "command": "bash $CHITTER_DIR/hooks/post-task.sh"
+            }
+        ]
     })
 
 settings_path.write_text(json.dumps(settings, indent=2))
@@ -381,17 +391,17 @@ settings_path = Path("$SETTINGS_FILE")
 if settings_path.exists():
     settings = json.loads(settings_path.read_text())
     if "hooks" in settings:
-        # Remove chitter hooks from PreToolUse
+        # Remove chitter hooks from PreToolUse (new format with nested hooks array)
         if "PreToolUse" in settings["hooks"]:
             settings["hooks"]["PreToolUse"] = [
                 h for h in settings["hooks"]["PreToolUse"]
-                if "chitter" not in h.get("command", "")
+                if not any("chitter" in hook.get("command", "") for hook in h.get("hooks", []))
             ]
         # Remove chitter hooks from PostToolUse
         if "PostToolUse" in settings["hooks"]:
             settings["hooks"]["PostToolUse"] = [
                 h for h in settings["hooks"]["PostToolUse"]
-                if "chitter" not in h.get("command", "")
+                if not any("chitter" in hook.get("command", "") for hook in h.get("hooks", []))
             ]
     settings_path.write_text(json.dumps(settings, indent=2))
 EOF
