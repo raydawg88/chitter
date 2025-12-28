@@ -27,6 +27,37 @@ DEFAULT_CONFIG = {
     "mode": "nudge",  # track, nudge, or block
 }
 
+# Known project roots to look for
+PROJECT_ROOTS = [
+    "/Goldfish/personal/",
+    "/Goldfish/work/",
+    "/Projects/",
+]
+
+
+def extract_project_from_prompt(prompt: str) -> str:
+    """Try to extract project name from file paths mentioned in the prompt."""
+    import re
+
+    # Look for paths that include known project roots
+    for root in PROJECT_ROOTS:
+        # Find paths like /Goldfish/personal/project-name/...
+        pattern = re.escape(root) + r"([^/\s\"']+)"
+        match = re.search(pattern, prompt)
+        if match:
+            return match.group(1)
+
+    # Fallback: look for any absolute path and extract a reasonable folder name
+    # Match paths like /Users/.../something/file.ext
+    path_match = re.search(r"/Users/[^/]+/[^/]+/([^/\s\"']+)", prompt)
+    if path_match:
+        folder = path_match.group(1)
+        # Skip common non-project folders
+        if folder not in ["Library", "Documents", "Desktop", "Downloads", ".claude", ".chitter"]:
+            return folder
+
+    return "unknown"
+
 
 def log(message: str) -> None:
     """Append to log file."""
@@ -354,8 +385,10 @@ def main():
             tool_input = data.get("tool_input", {})
             tool_use_id = data.get("tool_use_id", "")
             session_id = data.get("session_id", "unknown")[:8]  # First 8 chars for readability
-            cwd = data.get("cwd", "")  # Working directory if available
-            project = Path(cwd).name if cwd else "unknown"
+
+            # Try to extract project from file paths in the prompt
+            prompt = tool_input.get("prompt", "")
+            project = extract_project_from_prompt(prompt)
 
             log(f"[{session_id}] PRE: {tool_input.get('subagent_type')} ({tool_input.get('description', '')}) project={project}")
         except Exception as e:
@@ -373,8 +406,10 @@ def main():
             tool_response = data.get("tool_response", "")
             tool_use_id = data.get("tool_use_id", "")
             session_id = data.get("session_id", "unknown")[:8]
-            cwd = data.get("cwd", "")
-            project = Path(cwd).name if cwd else "unknown"
+
+            # Try to extract project from file paths in the prompt
+            prompt = tool_input.get("prompt", "")
+            project = extract_project_from_prompt(prompt)
 
             # Convert response to string if needed
             if isinstance(tool_response, dict):
@@ -385,7 +420,6 @@ def main():
             # Log a meaningful summary of what the agent did
             agent_type = tool_input.get('subagent_type', 'unknown')
             desc = tool_input.get('description', '')
-            summary = tool_response_str[:300].replace('\n', ' ').strip() if tool_response_str else 'no output'
             log(f"[{session_id}] POST: {agent_type} ({desc}) project={project}")
 
             handle_post(tool_input, tool_response_str, tool_use_id, session_id)
