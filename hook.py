@@ -40,10 +40,21 @@ def extract_project_from_prompt(prompt: str) -> tuple[str, str]:
     Returns (project_name, first_path_found)."""
     import re
 
-    # Find the first file path in the prompt
-    path_pattern = r"(/[^\s\"']+)"
-    path_match = re.search(path_pattern, prompt)
-    first_path = path_match.group(1) if path_match else ""
+    # Find actual file paths - must start with /Users/ or contain Goldfish
+    # and have a file extension or end with a directory-like structure
+    real_path_patterns = [
+        r"(/Users/[^\s\"']+)",  # macOS user paths
+        r"(/home/[^\s\"']+)",   # Linux user paths
+        r"([^\s\"']*Goldfish[^\s\"']+)",  # Goldfish paths
+        r"([^\s\"']*Projects/[^\s\"']+)",  # Projects paths
+    ]
+
+    first_path = ""
+    for pattern in real_path_patterns:
+        match = re.search(pattern, prompt)
+        if match:
+            first_path = match.group(1)
+            break
 
     # Look for paths that include known project roots
     for root in PROJECT_ROOTS:
