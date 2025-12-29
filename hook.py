@@ -35,8 +35,13 @@ COORDINATION_INSTRUCTION = "CHITTER_COORDINATION"
 
 # Default config
 DEFAULT_CONFIG = {
-    "mode": "queue",  # track, nudge, block, or queue (NEW!)
-    "max_concurrent": 1,  # For queue mode: how many agents can run at once
+    # Modes:
+    #   "sequential" - Blocks parallel agents. Main Claude must spawn one at a time.
+    #   "queue"      - Tracks order, warns on parallel, but doesn't block.
+    #   "block"      - Original mode: blocks without coordination marker.
+    #   "track"      - Just logs, no blocking.
+    "mode": "sequential",
+    "max_concurrent": 1,  # For sequential mode: how many agents can run at once
 }
 
 # Known project roots to look for
@@ -488,74 +493,129 @@ def handle_pre(tool_input: dict, tool_use_id: str = "", session_id: str = "unkno
     if not workflow:
         workflow = create_workflow(f"Queue workflow: {description}", session_id)
 
-    # QUEUE MODE: Sequential execution with telephone game pattern
-    if mode == "queue":
-        # Add to queue (or get existing position if retry)
+    # SEQUENTIAL MODE: Enforce one-at-a-time execution
+    # Blocks parallel agents - Main Claude must spawn sequentially
+    if mode == "sequential":
         position = add_to_queue(session_id, agent_id, subagent_type, task_summary)
+        coord_file = get_coordination_file(session_id)
 
         # Check if it's our turn
         if is_turn(session_id, agent_id, max_concurrent):
-            # It's our turn!
+            # It's our turn - run!
             mark_agent_running(session_id, agent_id)
             add_agent_to_workflow(workflow, agent_id, task_summary, subagent_type)
-
-            # Write coordination file with previous agents' decisions
             write_coordination_state(session_id, workflow, subagent_type, task_summary)
-            coord_file = get_coordination_file(session_id)
 
             completed = get_completed_agents(session_id)
 
             if position == 0:
-                log(f"[{session_id}] QUEUE: {agent_id} is FIRST - running immediately")
+                log(f"[{session_id}] SEQ: {agent_id} is FIRST - running")
                 print(f"""
-✅ CHITTER: First in queue - running now
+✅ CHITTER: First agent - running
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Agent: {subagent_type}
-Position: #1 (first)
-Status: Running immediately
+Agent: {subagent_type} (Position #1)
+
+📄 Coordination: {coord_file}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
             else:
-                log(f"[{session_id}] QUEUE: {agent_id} position {position} - NOW RUNNING (predecessors complete)")
+                log(f"[{session_id}] SEQ: {agent_id} position {position} - running (predecessors done)")
                 print(f"""
-✅ CHITTER: Your turn - running now
+✅ CHITTER: Your turn - running
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Agent: {subagent_type}
-Position: #{position + 1} of queue
-Previous agents completed: {len(completed)}
+Agent: {subagent_type} (Position #{position + 1})
+Completed before you: {len(completed)} agents
 
-📄 Read coordination file for previous decisions:
-   {coord_file}
+📄 Read their decisions: {coord_file}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
             return True
 
         else:
-            # Not our turn - BLOCK with queue info
+            # Not our turn - BLOCK
             agents_ahead = get_agents_ahead(session_id, agent_id)
-            ahead_info = "\n".join([f"  #{a['position']+1}. {a['type']}: {a['task'][:50]}..." for a in agents_ahead])
-
-            # Mark as blocked so POST hook doesn't falsely complete it
+            first_ahead = agents_ahead[0] if agents_ahead else None
             mark_agent_blocked(session_id, agent_id)
-            log(f"[{session_id}] QUEUE: {agent_id} position {position} - WAITING ({len(agents_ahead)} ahead)")
+
+            log(f"[{session_id}] SEQ: {agent_id} BLOCKED - waiting for {len(agents_ahead)} agents")
 
             print(f"""
-⏳ CHITTER: Queued - waiting for turn
+🛑 CHITTER: Sequential Mode - Agent Queued
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent: {subagent_type}
+Queue Position: #{position + 1}
+Waiting for: {first_ahead['type'] if first_ahead else 'unknown'} to complete
 
-Your position: #{position + 1}
-Agents ahead of you:
-{ahead_info}
-
-This is the "telephone game" pattern. Each agent runs sequentially
-so they can build on the previous agent's decisions.
-
-⏰ RETRY this Task call when the agents above complete.
-   The hook will automatically allow you when it's your turn.
+╔════════════════════════════════════════════════════════════════════╗
+║  MAIN CLAUDE: Spawn agents ONE AT A TIME for telephone game.      ║
+║                                                                    ║
+║  1. Wait for {first_ahead['type'] if first_ahead else 'the current agent':20} to complete           ║
+║  2. Then spawn this agent again (same parameters)                  ║
+║                                                                    ║
+║  Or spawn all agents sequentially from the start.                  ║
+╚════════════════════════════════════════════════════════════════════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
-            sys.exit(1)  # Block
+            sys.exit(1)
+
+    # QUEUE MODE: Sequential execution with telephone game pattern
+    # NOTE: This mode tracks order but does NOT block. Main Claude should spawn
+    # agents sequentially (one at a time) for true telephone-game pattern.
+    elif mode == "queue":
+        # Add to queue (or get existing position if retry)
+        position = add_to_queue(session_id, agent_id, subagent_type, task_summary)
+        mark_agent_running(session_id, agent_id)
+        add_agent_to_workflow(workflow, agent_id, task_summary, subagent_type)
+
+        # Write coordination file with previous agents' decisions
+        write_coordination_state(session_id, workflow, subagent_type, task_summary)
+        coord_file = get_coordination_file(session_id)
+
+        completed = get_completed_agents(session_id)
+        agents_ahead = get_agents_ahead(session_id, agent_id)
+
+        if position == 0:
+            log(f"[{session_id}] QUEUE: {agent_id} is FIRST - running")
+            print(f"""
+✅ CHITTER: First agent running
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent: {subagent_type}
+Position: #1 (first)
+
+📄 Coordination file: {coord_file}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+""")
+        elif len(agents_ahead) == 0:
+            log(f"[{session_id}] QUEUE: {agent_id} position {position} - running (predecessors complete)")
+            print(f"""
+✅ CHITTER: Running (predecessors complete)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent: {subagent_type}
+Position: #{position + 1}
+Completed before you: {len(completed)} agents
+
+📄 Read previous decisions: {coord_file}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+""")
+        else:
+            # Parallel detected - warn but don't block
+            ahead_types = [a['type'] for a in agents_ahead]
+            log(f"[{session_id}] QUEUE: {agent_id} position {position} - PARALLEL with {len(agents_ahead)} others")
+            print(f"""
+⚠️  CHITTER: Parallel execution detected
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent: {subagent_type}
+Position: #{position + 1}
+Still running ahead of you: {', '.join(ahead_types)}
+
+⚠️  For true "telephone game", spawn agents ONE AT A TIME.
+   This agent may miss decisions from agents still running.
+
+📄 Coordination file (may be incomplete): {coord_file}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+""")
+        return True
 
     # BLOCK MODE: Original blocking behavior (require coordination marker)
     elif mode == "block":
