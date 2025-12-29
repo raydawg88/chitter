@@ -14,6 +14,7 @@ Usage:
 import json
 import os
 import sys
+import fcntl
 from datetime import datetime
 from pathlib import Path
 
@@ -105,6 +106,30 @@ def get_queue_file(session_id: str) -> Path:
     return QUEUE_DIR / f"{session_id}.json"
 
 
+def get_lock_file(session_id: str) -> Path:
+    """Get the lock file for a session's queue."""
+    return QUEUE_DIR / f"{session_id}.lock"
+
+
+class QueueLock:
+    """File-based lock for queue operations."""
+    def __init__(self, session_id: str):
+        self.lock_file = get_lock_file(session_id)
+        self.fd = None
+
+    def __enter__(self):
+        self.lock_file.touch(exist_ok=True)
+        self.fd = open(self.lock_file, 'w')
+        fcntl.flock(self.fd, fcntl.LOCK_EX)  # Exclusive lock, blocks until acquired
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.fd:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            self.fd.close()
+        return False
+
+
 def get_queue(session_id: str) -> dict:
     """Get or create queue state for a session."""
     queue_file = get_queue_file(session_id)
@@ -129,25 +154,26 @@ def save_queue(session_id: str, queue: dict) -> None:
 
 def add_to_queue(session_id: str, agent_id: str, agent_type: str, task: str) -> int:
     """Add an agent to the queue. Returns its position (0-indexed)."""
-    queue = get_queue(session_id)
+    with QueueLock(session_id):
+        queue = get_queue(session_id)
 
-    # Check if already in queue (retry case)
-    for agent in queue["agents"]:
-        if agent["id"] == agent_id:
-            return agent["position"]
+        # Check if already in queue (retry case)
+        for agent in queue["agents"]:
+            if agent["id"] == agent_id:
+                return agent["position"]
 
-    position = len(queue["agents"])
-    queue["agents"].append({
-        "id": agent_id,
-        "type": agent_type,
-        "task": task,
-        "status": "queued",
-        "position": position,
-        "queued_at": datetime.now().isoformat()
-    })
-    save_queue(session_id, queue)
-    log(f"[{session_id}] QUEUE: Added {agent_type} at position {position}")
-    return position
+        position = len(queue["agents"])
+        queue["agents"].append({
+            "id": agent_id,
+            "type": agent_type,
+            "task": task,
+            "status": "queued",
+            "position": position,
+            "queued_at": datetime.now().isoformat()
+        })
+        save_queue(session_id, queue)
+        log(f"[{session_id}] QUEUE: Added {agent_type} at position {position}")
+        return position
 
 
 def get_queue_position(session_id: str, agent_id: str) -> int | None:
@@ -180,40 +206,43 @@ def is_turn(session_id: str, agent_id: str, max_concurrent: int = 1) -> bool:
 
 def mark_agent_running(session_id: str, agent_id: str) -> None:
     """Mark an agent as currently running."""
-    queue = get_queue(session_id)
-    for agent in queue["agents"]:
-        if agent["id"] == agent_id:
-            agent["status"] = "running"
-            agent["started_at"] = datetime.now().isoformat()
-            break
-    save_queue(session_id, queue)
+    with QueueLock(session_id):
+        queue = get_queue(session_id)
+        for agent in queue["agents"]:
+            if agent["id"] == agent_id:
+                agent["status"] = "running"
+                agent["started_at"] = datetime.now().isoformat()
+                break
+        save_queue(session_id, queue)
 
 
 def mark_agent_complete(session_id: str, agent_id: str) -> bool:
     """Mark an agent as complete. Returns False if agent wasn't running (was blocked)."""
-    queue = get_queue(session_id)
-    for agent in queue["agents"]:
-        if agent["id"] == agent_id:
-            # Only mark complete if it was actually running (not blocked)
-            if agent["status"] != "running":
-                log(f"[{session_id}] QUEUE: {agent_id} POST fired but status was '{agent['status']}' - not marking complete")
-                return False
-            agent["status"] = "complete"
-            agent["completed_at"] = datetime.now().isoformat()
-            break
-    save_queue(session_id, queue)
-    log(f"[{session_id}] QUEUE: {agent_id} complete")
-    return True
+    with QueueLock(session_id):
+        queue = get_queue(session_id)
+        for agent in queue["agents"]:
+            if agent["id"] == agent_id:
+                # Only mark complete if it was actually running (not blocked)
+                if agent["status"] != "running":
+                    log(f"[{session_id}] QUEUE: {agent_id} POST fired but status was '{agent['status']}' - not marking complete")
+                    return False
+                agent["status"] = "complete"
+                agent["completed_at"] = datetime.now().isoformat()
+                break
+        save_queue(session_id, queue)
+        log(f"[{session_id}] QUEUE: {agent_id} complete")
+        return True
 
 
 def mark_agent_blocked(session_id: str, agent_id: str) -> None:
     """Mark an agent as blocked (waiting in queue)."""
-    queue = get_queue(session_id)
-    for agent in queue["agents"]:
-        if agent["id"] == agent_id:
-            agent["status"] = "blocked"
-            break
-    save_queue(session_id, queue)
+    with QueueLock(session_id):
+        queue = get_queue(session_id)
+        for agent in queue["agents"]:
+            if agent["id"] == agent_id:
+                agent["status"] = "blocked"
+                break
+        save_queue(session_id, queue)
 
 
 def get_agents_ahead(session_id: str, agent_id: str) -> list[dict]:
