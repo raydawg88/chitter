@@ -288,30 +288,54 @@ def write_coordination_state(session_id: str, workflow: dict, new_agent_type: st
     agents = workflow.get("agents", {})
     completed_agents = [(aid, a) for aid, a in agents.items() if a.get("status") == "complete"]
 
+    # Get queue to show proper positions
+    queue = get_queue(session_id)
+    agent_positions = {a["id"]: a["position"] for a in queue.get("agents", [])}
+
+    # Sort completed agents by position
+    completed_agents_sorted = sorted(completed_agents, key=lambda x: agent_positions.get(x[0], 99))
+    next_position = len(completed_agents_sorted) + 1
+
     lines = [
-        f"# CHITTER_COORDINATION - Session {session_id}",
+        f"# CHITTER COORDINATION - Session {session_id}",
         "",
         f"**Read this before starting your work.**",
         "",
-        f"You are part of a sequential agent workflow. Previous agents have completed their work.",
-        f"Build on their decisions - don't contradict them.",
-        "",
-        "## Your Task",
-        f"You are: **{new_agent_type}**",
-        f"Task: {new_agent_task}",
-        "",
+        f"## Telephone Game Status",
+        f"",
+        f"| # | Agent | Status |",
+        f"|---|-------|--------|",
     ]
 
+    # Show completed agents in the status table
+    for aid, agent in completed_agents_sorted:
+        pos = agent_positions.get(aid, "?")
+        agent_type = agent.get('subagent_type', 'unknown')
+        lines.append(f"| {pos + 1} | {agent_type} | ✅ Complete |")
+
+    lines.append(f"| {next_position} | **{new_agent_type}** | 🔄 Running (YOU) |")
+    lines.append("")
+
+    lines.extend([
+        "## Your Task",
+        f"You are: **{new_agent_type}** (Agent #{next_position})",
+        f"Task: {new_agent_task}",
+        "",
+    ])
+
     # Completed agents and their decisions (the "telephone" context)
-    if completed_agents:
+    if completed_agents_sorted:
         lines.append("## Previous Agents (build on their work)")
         lines.append("")
-        for aid, agent in completed_agents:
-            lines.append(f"### {agent.get('subagent_type', 'unknown')}")
+        for aid, agent in completed_agents_sorted:
+            pos = agent_positions.get(aid, "?")
+            agent_type = agent.get('subagent_type', 'unknown')
+            lines.append(f"### Agent #{pos + 1}: {agent_type}")
             lines.append(f"Task: {agent.get('task', 'no description')}")
             decisions = agent.get("decisions", [])
             if decisions:
-                lines.append("**Decisions made:**")
+                lines.append("")
+                lines.append("**Key decisions:**")
                 for d in decisions[:10]:
                     lines.append(f"- {d}")
             lines.append("")
@@ -446,29 +470,90 @@ def extract_actual_content(output: str) -> str:
 
 
 def extract_decisions(output: str) -> list[str]:
-    """Extract decision-like statements from agent output."""
+    """Extract structured decisions from agent output.
+
+    Looks for our phase output templates (### headers) and extracts
+    the key decisions, specifications, and rationale.
+    """
     text = extract_actual_content(output)
     if not text:
         return []
 
     decisions = []
-    indicators = [
-        "decided", "chose", "chosen", "using", "created", "implemented",
-        "will use", "went with", "selected", "picked", "recommend",
-        "should use", "best approach", "opted for", "settled on",
-        "design direction", "final design", "winning concept",
-        "endpoint", "api", "format", "schema", "interface"
+    lines = text.split('\n')
+
+    # Headers that indicate important content (from our templates)
+    decision_headers = [
+        "### decision", "### core principle", "### specification",
+        "### visual specification", "### interaction specification",
+        "### motion specification", "### responsive behavior",
+        "### problem definition", "### key finding", "### recommendation",
+        "### why this", "### trade-off", "### quality benchmark",
+        "### architecture decision", "### code pattern", "### implementation"
     ]
 
-    lines = text.split('\n')
-    for line in lines:
-        line_lower = line.lower()
-        for indicator in indicators:
-            if indicator in line_lower and 20 < len(line) < 300:
-                decisions.append(line.strip())
-                break
+    # Noise patterns to skip
+    noise_patterns = [
+        "│", "├", "└", "─", "┌", "┐", "┘", "┴", "┬", "┤", "┼",  # Table borders
+        "---", "===", "***",  # Horizontal rules
+        "```",  # Code blocks markers
+        "| --- |", "| :-- |",  # Markdown table separators
+    ]
 
-    return decisions[:15]
+    current_section = None
+    section_content = []
+
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+        line_lower = line_stripped.lower()
+
+        # Skip noise
+        if any(noise in line_stripped for noise in noise_patterns):
+            continue
+
+        # Skip empty lines and very short lines
+        if len(line_stripped) < 5:
+            continue
+
+        # Skip lines that look like table rows (start with |)
+        if line_stripped.startswith('|') and line_stripped.endswith('|'):
+            continue
+
+        # Check if this is a decision header
+        is_header = line_stripped.startswith('###')
+        is_decision_header = any(h in line_lower for h in decision_headers)
+
+        if is_header and is_decision_header:
+            # Save previous section if it had content
+            if current_section and section_content:
+                content = ' '.join(section_content[:3])  # First 3 lines
+                if len(content) > 20:
+                    decisions.append(f"**{current_section}**: {content[:200]}")
+
+            # Start new section
+            current_section = line_stripped.replace('###', '').strip()
+            section_content = []
+        elif current_section:
+            # Add content to current section
+            if len(line_stripped) > 10 and not line_stripped.startswith('#'):
+                section_content.append(line_stripped)
+        else:
+            # Look for key statements outside sections
+            key_phrases = [
+                "we decided", "we chose", "final design:", "winning concept:",
+                "using:", "architecture:", "stack:", "the approach is"
+            ]
+            if any(phrase in line_lower for phrase in key_phrases):
+                if 20 < len(line_stripped) < 250:
+                    decisions.append(line_stripped)
+
+    # Don't forget the last section
+    if current_section and section_content:
+        content = ' '.join(section_content[:3])
+        if len(content) > 20:
+            decisions.append(f"**{current_section}**: {content[:200]}")
+
+    return decisions[:20]
 
 
 # ============================================================================
