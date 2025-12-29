@@ -594,24 +594,29 @@ def handle_pre(tool_input: dict, tool_use_id: str = "", session_id: str = "unkno
             completed = get_completed_agents(session_id)
 
             if position == 0:
-                log(f"[{session_id}] SEQ: {agent_id} is FIRST - running")
+                log(f"[{session_id}] START #1: {subagent_type} (first agent)")
                 print(f"""
-✅ CHITTER: First agent - running
+🚀 CHITTER: Agent #1 Starting
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Agent: {subagent_type} (Position #1)
+Agent: {subagent_type}
+Position: #1 (first in sequence)
+Reading context from: (none - you're first!)
 
-📄 Coordination: {coord_file}
+Task: {task_summary}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
             else:
-                log(f"[{session_id}] SEQ: {agent_id} position {position} - running (predecessors done)")
+                # Get names of completed agents
+                completed_names = [a["type"] for a in completed]
+                log(f"[{session_id}] START #{position + 1}: {subagent_type} (reading from: {', '.join(completed_names)})")
                 print(f"""
-✅ CHITTER: Your turn - running
+🚀 CHITTER: Agent #{position + 1} Starting
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Agent: {subagent_type} (Position #{position + 1})
-Completed before you: {len(completed)} agents
+Agent: {subagent_type}
+Position: #{position + 1}
+Reading context from: {', '.join(completed_names)}
 
-📄 Read their decisions: {coord_file}
+Task: {task_summary}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
             return True
@@ -738,6 +743,14 @@ def handle_post(tool_input: dict, tool_output, tool_use_id: str = "", session_id
     subagent_type = tool_input.get("subagent_type", "unknown")
     agent_id = tool_use_id[:12] if tool_use_id else None
 
+    # Get position before marking complete
+    queue = get_queue(session_id)
+    position = None
+    for a in queue.get("agents", []):
+        if a["id"] == agent_id:
+            position = a["position"]
+            break
+
     # Mark complete in queue - but only if it was actually running
     if agent_id:
         was_running = mark_agent_complete(session_id, agent_id)
@@ -756,28 +769,77 @@ def handle_post(tool_input: dict, tool_output, tool_use_id: str = "", session_id
                 agent_id = aid
                 break
 
+    decisions = []
     if agent_id and agent_id in workflow.get("agents", {}):
         complete_agent(workflow, agent_id, tool_output)
 
-        # Update coordination file for next agent
+        # Get the decisions that were extracted
         workflow = get_active_workflow(session_id)
+        if workflow and agent_id in workflow.get("agents", {}):
+            decisions = workflow["agents"][agent_id].get("decisions", [])
+
+        # Update coordination file for next agent
         if workflow:
             write_coordination_state(session_id, workflow, "next_agent", "pending")
 
-    # Check if all done
+    # Get previous agents for context
+    completed_before = []
     queue = get_queue(session_id)
+    for a in queue.get("agents", []):
+        if position is not None and a["position"] < position and a["status"] == "complete":
+            completed_before.append(a["type"])
+
+    # Log completion with decisions
+    pos_display = position + 1 if position is not None else "?"
+
+    # Build the completion message
+    decision_lines = []
+    for d in decisions[:5]:  # Show top 5 decisions
+        # Truncate long decisions
+        d_display = d[:100] + "..." if len(d) > 100 else d
+        decision_lines.append(f"   • {d_display}")
+
+    if decisions:
+        log(f"[{session_id}] COMPLETE #{pos_display}: {subagent_type}")
+        for d in decisions[:3]:
+            log(f"[{session_id}]   → {d[:80]}")
+
+    # Print visible completion
+    print(f"""
+✅ CHITTER: Agent #{pos_display} Complete
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent: {subagent_type}
+Built on: {', '.join(completed_before) if completed_before else '(first agent)'}
+
+Key decisions/learnings:""")
+
+    if decision_lines:
+        print("\n".join(decision_lines))
+    else:
+        print("   (no structured decisions extracted)")
+
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+    # Check if all done
     all_complete = all(a["status"] == "complete" for a in queue["agents"]) if queue["agents"] else False
 
     if all_complete and len(queue["agents"]) > 1:
         log(f"[{session_id}] QUEUE COMPLETE: All {len(queue['agents'])} agents finished")
-        print(f"""
-🎉 CHITTER: All agents complete!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Agents completed: {len(queue['agents'])}
-Pattern: Sequential (telephone game)
 
+        # Build summary of all agents
+        summary_lines = []
+        for a in sorted(queue["agents"], key=lambda x: x["position"]):
+            summary_lines.append(f"   #{a['position'] + 1}. {a['type']}")
+
+        print(f"""
+🎉 CHITTER: Telephone Game Complete!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agents completed in sequence:
+""")
+        print("\n".join(summary_lines))
+        print(f"""
 Each agent built on the previous one's work.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
 
 
