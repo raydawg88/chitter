@@ -168,9 +168,10 @@ def is_turn(session_id: str, agent_id: str, max_concurrent: int = 1) -> bool:
         return True  # Not in queue, allow
 
     # Count how many agents before this one are still not complete
+    # "blocked" and "queued" both count as "not done yet"
     agents_ahead = 0
     for agent in queue["agents"]:
-        if agent["position"] < position and agent["status"] != "complete":
+        if agent["position"] < position and agent["status"] not in ("complete",):
             agents_ahead += 1
 
     # It's our turn if fewer than max_concurrent agents are ahead
@@ -188,16 +189,31 @@ def mark_agent_running(session_id: str, agent_id: str) -> None:
     save_queue(session_id, queue)
 
 
-def mark_agent_complete(session_id: str, agent_id: str) -> None:
-    """Mark an agent as complete."""
+def mark_agent_complete(session_id: str, agent_id: str) -> bool:
+    """Mark an agent as complete. Returns False if agent wasn't running (was blocked)."""
     queue = get_queue(session_id)
     for agent in queue["agents"]:
         if agent["id"] == agent_id:
+            # Only mark complete if it was actually running (not blocked)
+            if agent["status"] != "running":
+                log(f"[{session_id}] QUEUE: {agent_id} POST fired but status was '{agent['status']}' - not marking complete")
+                return False
             agent["status"] = "complete"
             agent["completed_at"] = datetime.now().isoformat()
             break
     save_queue(session_id, queue)
     log(f"[{session_id}] QUEUE: {agent_id} complete")
+    return True
+
+
+def mark_agent_blocked(session_id: str, agent_id: str) -> None:
+    """Mark an agent as blocked (waiting in queue)."""
+    queue = get_queue(session_id)
+    for agent in queue["agents"]:
+        if agent["id"] == agent_id:
+            agent["status"] = "blocked"
+            break
+    save_queue(session_id, queue)
 
 
 def get_agents_ahead(session_id: str, agent_id: str) -> list[dict]:
@@ -210,7 +226,7 @@ def get_agents_ahead(session_id: str, agent_id: str) -> list[dict]:
 
     ahead = []
     for agent in queue["agents"]:
-        if agent["position"] < position and agent["status"] != "complete":
+        if agent["position"] < position and agent["status"] not in ("complete",):
             ahead.append(agent)
     return ahead
 
@@ -490,6 +506,8 @@ Previous agents completed: {len(completed)}
             agents_ahead = get_agents_ahead(session_id, agent_id)
             ahead_info = "\n".join([f"  #{a['position']+1}. {a['type']}: {a['task'][:50]}..." for a in agents_ahead])
 
+            # Mark as blocked so POST hook doesn't falsely complete it
+            mark_agent_blocked(session_id, agent_id)
             log(f"[{session_id}] QUEUE: {agent_id} position {position} - WAITING ({len(agents_ahead)} ahead)")
 
             print(f"""
@@ -546,9 +564,12 @@ def handle_post(tool_input: dict, tool_output, tool_use_id: str = "", session_id
     subagent_type = tool_input.get("subagent_type", "unknown")
     agent_id = tool_use_id[:12] if tool_use_id else None
 
-    # Mark complete in queue
+    # Mark complete in queue - but only if it was actually running
     if agent_id:
-        mark_agent_complete(session_id, agent_id)
+        was_running = mark_agent_complete(session_id, agent_id)
+        if not was_running:
+            # This agent was blocked in PRE, POST fired anyway - skip processing
+            return
 
     # Update workflow
     workflow = get_active_workflow(session_id)
